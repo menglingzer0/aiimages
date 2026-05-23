@@ -1,0 +1,796 @@
+<!DOCTYPE html>
+<html lang="zh" class="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>基于 CloudFlare 的在线文生图服务</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet" crossorigin="anonymous">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css">
+    <link rel="icon" type="image/x-icon" href="https://cdn.jsdelivr.net/gh/huarzone/Text2img-Cloudflare-Workers@main/public/favicon.ico">
+    <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+    <style>
+        :root {
+            --primary: #5046e5;
+            --primary-light: #6e67eb;
+            --primary-dark: #4338ca;
+            --secondary: #f0f4f8;
+            --text: #1a202c;
+            --text-light: #4a5568;
+            --background: #ffffff;
+            --card-bg: #f7fafc;
+            --border: #e2e8f0;
+            --success: #10b981;
+            --error: #ef4444;
+            --warning: #f59e0b;
+            --info: #3b82f6;
+        }
+        
+        .dark {
+            --primary: #6e67eb;
+            --primary-light: #8a84ee;
+            --primary-dark: #5046e5;
+            --secondary: #2d3748;
+            --text: #f7fafc;
+            --text-light: #cbd5e0;
+            --background: #111827;
+            --card-bg: #1f2937;
+            --border: #374151;
+        }
+        
+        body {
+            background-color: var(--background);
+            color: var(--text);
+            transition: background-color 0.3s ease, color 0.3s ease;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+        
+        .btn { padding: 1rem 1.5rem; border-radius: 0.375rem; transition: all 0.3s; }
+        .btn:focus { outline: none; }
+        .btn-primary { background-color: var(--primary); color: white; }
+        .btn-primary:hover { background-color: var(--primary-light); transform: translateY(-1px); box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); }
+        .btn-primary:active { background-color: var(--primary-dark); transform: translateY(0); }
+        .btn-secondary { background-color: var(--secondary); color: var(--text); border: 1px solid var(--border); }
+        .btn-secondary:hover { background-color: var(--border); transform: translateY(-1px); box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); }
+        .btn-secondary:active { transform: translateY(0); }
+        .card { background-color: var(--card-bg); border: 1px solid var(--border); border-radius: 0.5rem; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1); transition: all 0.3s ease; }
+        .card:hover { box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05); }
+        input, select, textarea { background-color: var(--background); color: var(--text); border: 1px solid var(--border); border-radius: 0.375rem; padding: 0.5rem 0.75rem; transition: all 0.3s ease; width: 100%; }
+        input[type="file"] { padding: 0.3rem 0.5rem; }
+        input:focus, select:focus, textarea:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(80, 70, 229, 0.1); }
+        .slider { -webkit-appearance: none; appearance: none; width: 100%; height: 6px; border-radius: 5px; background: var(--border); outline: none; margin: 10px 0; }
+        .slider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 18px; height: 18px; border-radius: 50%; background: var(--primary); cursor: pointer; transition: all 0.2s ease; }
+        .slider::-webkit-slider-thumb:hover { transform: scale(1.2); box-shadow: 0 0 0 3px rgba(80, 70, 229, 0.2); }
+        .slider::-moz-range-thumb { width: 18px; height: 18px; border-radius: 50%; background: var(--primary); cursor: pointer; transition: all 0.2s ease; border: none; }
+        .slider::-moz-range-thumb:hover { transform: scale(1.2); box-shadow: 0 0 0 3px rgba(80, 70, 229, 0.2); }
+        .animate-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+        .loading-mask { position: absolute; top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center; background-color: rgba(0,0,0,0.6); border-radius: 0.5rem; z-index: 10; backdrop-filter: blur(4px); }
+        .image-container { aspect-ratio: 1 / 1; overflow: hidden; display: flex; align-items: center; justify-content: center; background-color: var(--card-bg); position: relative; border-radius: 0.5rem; max-height: 400px; margin: 0 auto; width: 100%; }
+        #imageStatus { position: absolute; bottom: 1rem; left: 1rem; z-index: 20; padding: 0.25rem 0.75rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 500; box-shadow: 0 2px 4px rgba(0,0,0,0.1); transition: all 0.3s ease; }
+        .param-badge { background-color: var(--secondary); color: var(--text); padding: 0.25rem 0.5rem; border-radius: 0.25rem; font-size: 0.75rem; margin-right: 0.5rem; margin-bottom: 0.5rem; display: inline-block; border: 1px solid var(--border); }
+        .fade-in { animation: fadeIn 0.5s ease-in-out; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        .tooltip { position: relative; display: inline-block; }
+        .tooltip .tooltiptext { visibility: hidden; width: 200px; background-color: var(--card-bg); color: var(--text); text-align: center; border-radius: 6px; padding: 8px; position: absolute; z-index: 1; bottom: 125%; left: 50%; margin-left: -100px; opacity: 0; transition: opacity 0.3s; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); border: 1px solid var(--border); font-size: 0.75rem; }
+        .tooltip:hover .tooltiptext { visibility: visible; opacity: 1; }
+        .hidden { display: none !important; }
+        .file-upload-wrapper { position: relative; }
+        .file-upload-wrapper .file-name { font-size: 0.8rem; color: var(--text-light); margin-top: 4px; display: block; }
+        @media (max-width: 768px) { .mobile-flex-col { flex-direction: column; } .container { padding-left: 1rem; padding-right: 1rem; } .image-container { max-height: 400px; } }
+        @media (min-width: 1024px) { .container { max-width: 1200px; } }
+    </style>
+</head>
+<body class="min-h-screen py-4">
+    <div class="container mx-auto px-4 py-4 max-w-6xl">
+        <div class="flex items-center justify-between mb-6">
+            <h1 class="text-2xl md:text-3xl font-bold flex items-center">
+                🐳&nbsp;在线文生图服务
+            </h1>
+            <div class="flex items-center space-x-2">
+                <button id="themeToggle" class="btn btn-secondary p-2 h-10 w-10 flex items-center justify-center" aria-label="切换暗色主题">
+                    <i class="fa-solid fa-moon"></i>
+                </button>
+                <button id="github" class="btn btn-secondary p-2 h-10 w-10 flex items-center justify-center" aria-label="项目地址" onclick="window.open('https://github.com/huarzone/Text2img-Cloudflare-Workers', '_blank')">
+                    <i class="fa-brands fa-github"></i>
+                </button>
+            </div>
+        </div>
+
+        <div class="flex flex-col lg:flex-row gap-6 mobile-flex-col">
+            <div class="w-full lg:w-2/5 space-y-4">
+                <div class="card p-4 space-y-4 fade-in">
+                    <div class="flex justify-between items-center">
+                        <h2 class="text-lg font-semibold flex items-center"><i class="fa-solid fa-sliders mr-2 text-primary"></i>基本设置</h2>
+                        <button id="randomButton" class="btn btn-secondary text-sm py-1 px-3 flex items-center"><i class="fa-solid fa-dice mr-1"></i> 随机提示词</button>
+                    </div>
+                    
+                    <div>
+                        <label for="prompt" class="block text-sm font-medium mb-1 flex items-center"><i class="fa-solid fa-wand-magic-sparkles mr-1 text-xs"></i> 正向提示词</label>
+                        <textarea id="prompt" rows="3" placeholder="描述您想要生成的图像内容及样式..." class="w-full"></textarea>
+                    </div>
+                    
+                    <div>
+                        <label for="negative_prompt" class="block text-sm font-medium mb-1 flex items-center"><i class="fa-solid fa-ban mr-1 text-xs"></i> 反向提示词</label>
+                        <textarea id="negative_prompt" rows="2" placeholder="描述在生成的图像中要避免的元素文本..." class="w-full"></textarea>
+                    </div>
+                    
+                    <div>
+                        <label for="model" class="block text-sm font-medium mb-1 flex items-center"><i class="fa-solid fa-robot mr-1 text-xs"></i> 模型</label>
+                        <select id="model" class="w-full">
+                            <option value="loading" disabled selected>加载中...</option>
+                        </select>
+                    </div>
+
+                    <div id="img2imgInputs" class="hidden space-y-3">
+                        <div class="file-upload-wrapper">
+                            <label for="image_file" class="block text-sm font-medium mb-1 flex items-center"><i class="fa-solid fa-image mr-1 text-xs"></i> 上传输入图像（必填）</label>
+                            <input type="file" id="image_file" class="w-full" accept="image/png, image/jpeg, image/webp">
+                            <span id="image_file_name" class="file-name">未选择文件</span>
+                        </div>
+                        <div class="file-upload-wrapper">
+                            <label for="mask_file" class="block text-sm font-medium mb-1 flex items-center"><i class="fa-solid fa-mask mr-1 text-xs"></i> 上传遮罩图像（局部重绘必填）</label>
+                            <input type="file" id="mask_file" class="w-full" accept="image/png, image/jpeg, image/webp">
+                            <span id="mask_file_name" class="file-name">未选择文件</span>
+                        </div>
+                        <div>
+                            <div class="flex justify-between items-center">
+                                <label for="strength" class="block text-sm font-medium flex items-center tooltip"><i class="fa-solid fa-sliders mr-1 text-xs"></i> 变换强度<span class="tooltiptext">控制对原图的变换程度，0.0保持原样，1.0完全重绘</span></label>
+                                <span id="strengthValue" class="text-sm font-mono">0.8</span>
+                            </div>
+                            <input type="range" id="strength" min="0" max="1" step="0.1" value="0.8" class="slider w-full">
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card p-4 space-y-4 fade-in">
+                    <div class="flex justify-between items-center">
+                        <h2 class="text-lg font-semibold flex items-center"><i class="fa-solid fa-gear mr-2 text-primary"></i>高级选项</h2>
+                        <button id="toggleAdvanced" class="text-xs btn btn-secondary py-1 px-3 flex items-center"><i class="fa-solid fa-chevron-down mr-1" id="advancedIcon"></i> 显示/隐藏</button>
+                    </div>
+                    
+                    <div id="advancedOptions" class="space-y-3 hidden">
+                        <div>
+                            <div class="flex justify-between items-center">
+                                <label for="width" class="block text-sm font-medium flex items-center"><i class="fa-solid fa-arrows-left-right mr-1 text-xs"></i> 图像宽度</label>
+                                <span id="widthValue" class="text-sm font-mono">1024px</span>
+                            </div>
+                            <input type="range" id="width" min="256" max="2048" step="64" value="1024" class="slider w-full">
+                        </div>
+                        <div>
+                            <div class="flex justify-between items-center">
+                                <label for="height" class="block text-sm font-medium flex items-center"><i class="fa-solid fa-arrows-up-down mr-1 text-xs"></i> 图像高度</label>
+                                <span id="heightValue" class="text-sm font-mono">1024px</span>
+                            </div>
+                            <input type="range" id="height" min="256" max="2048" step="64" value="1024" class="slider w-full">
+                        </div>
+                        <div>
+                            <div class="flex justify-between items-center">
+                                <label for="num_steps" class="block text-sm font-medium flex items-center tooltip"><i class="fa-solid fa-shoe-prints mr-1 text-xs"></i> 迭代步数<span class="tooltiptext">更高的步数通常会产生更精细的细节，但需要更长的处理时间</span></label>
+                                <span id="num_stepsValue" class="text-sm font-mono">20</span>
+                            </div>
+                            <input type="range" id="num_steps" min="1" max="50" step="1" value="20" class="slider w-full">
+                        </div>
+                        <div>
+                            <div class="flex justify-between items-center">
+                                <label for="guidance" class="block text-sm font-medium flex items-center tooltip"><i class="fa-solid fa-compass mr-1 text-xs"></i> 引导系数<span class="tooltiptext">控制生成图像与提示词的匹配程度，较高的值会更严格遵循提示词</span></label>
+                                <span id="guidanceValue" class="text-sm font-mono">7.5</span>
+                            </div>
+                            <input type="range" id="guidance" min="0" max="30" step="0.5" value="7.5" class="slider w-full">
+                        </div>
+                        <div>
+                            <label for="seed" class="block text-sm font-medium mb-1 flex items-center tooltip"><i class="fa-solid fa-seedling mr-1 text-xs"></i> 随机种子<span class="tooltiptext">使用相同的种子值可以在其他参数相同的情况下生成相似的图像</span></label>
+                            <div class="flex gap-2">
+                                <input type="number" id="seed" placeholder="随机种子值" class="w-full">
+                                <button id="randomSeed" class="btn btn-secondary text-sm py-1 px-3"><i class="fa-solid fa-random"></i></button>
+                            </div>
+                            <p class="text-xs text-gray-500 mt-1">留空则随机生成</p>
+                        </div>
+                        <div>
+                            <label for="num_outputs" class="block text-sm font-medium mb-1 flex items-center"><i class="fa-solid fa-layer-group mr-1 text-xs"></i> 生成数量</label>
+                            <select id="num_outputs" class="w-full">
+                                <option value="1" selected>1</option>
+                                <option value="2">2</option>
+                                <option value="4">4</option>
+                                <option value="8">8</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+                
+                <button id="submitButton" class="btn btn-primary w-full py-3 flex items-center justify-center">
+                    <i class="fa-solid fa-wand-magic-sparkles mr-2"></i> 生成图像
+                </button>
+            </div>
+            
+            <div class="w-full lg:w-3/5">
+                <div class="card h-full p-4 space-y-4 fade-in">
+                    <div class="flex justify-between items-center">
+                        <h2 class="text-lg font-semibold flex items-center"><i class="fa-solid fa-image mr-2 text-primary"></i>生成结果</h2>
+                        <div class="flex space-x-2">
+                            <button id="copyParamsButton" class="btn btn-secondary text-sm py-1 px-3 hidden"><i class="fa-solid fa-copy mr-1"></i> 复制参数</button>
+                            <button id="downloadButton" class="btn btn-secondary text-sm py-1 px-3 hidden"><i class="fa-solid fa-download mr-1"></i> 下载图像</button>
+                            <button id="downloadZipButton" class="btn btn-secondary text-sm py-1 px-3 hidden"><i class="fa-solid fa-file-zipper mr-1"></i> 下载ZIP</button>
+                        </div>
+                    </div>
+                    
+                    <div class="image-container card">
+                        <div id="loadingOverlay" class="loading-mask hidden">
+                            <div class="text-center w-full px-6">
+                                <div class="inline-block animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-white"></div>
+                                <p id="loadingStatusText" class="text-white mt-3 font-medium">生成中，请稍候...</p>
+                                <p class="text-white text-sm mt-1">这可能需要几秒到几十秒不等</p>
+                                <div id="progressBarContainer" class="w-full mt-4">
+                                    <div class="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700">
+                                        <div id="progressBar" class="bg-blue-500 h-2.5 rounded-full" style="width: 0%"></div>
+                                    </div>
+                                    <div class="flex justify-between text-xs mt-1 text-white">
+                                        <span id="progressText">0%</span>
+                                        <span id="progressExtra">估算</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="initialPrompt" class="text-center text-gray-400 dark:text-gray-600">
+                            <i class="fa-solid fa-image-portrait text-4xl mb-2"></i>
+                            <p>点击生成按钮开始创建图像</p>
+                        </div>
+                        <span id="imageStatus" class="bg-gray-300 text-gray-700 hidden">状态</span>
+                        <img id="aiImage" class="max-h-full max-w-full rounded hidden" alt="生成的图像">
+                        <div id="imageGallery" class="grid grid-cols-4 gap-2 mt-3 hidden"></div>
+                    </div>
+                    
+                    <div id="imageInfo" class="space-y-3 mt-2">
+                        <div class="grid grid-cols-2 gap-3">
+                            <div><span class="font-medium flex items-center"><i class="fa-regular fa-clock mr-1 text-xs"></i> 生成时间：</span><span id="generationTime" class="ml-1">-</span></div>
+                            <div><span class="font-medium flex items-center"><i class="fa-solid fa-microchip mr-1 text-xs"></i> 使用模型：</span><span id="usedModel" class="ml-1">-</span></div>
+                            <div><span class="font-medium flex items-center"><i class="fa-solid fa-bolt mr-1 text-xs"></i> 算力估计：</span><span id="computeInfo" class="ml-1">-</span><span class="text-xs text-gray-500 ml-2">(it/s)</span></div>
+                            <div><span class="font-medium flex items-center"><i class="fa-solid fa-database mr-1 text-xs"></i> 输出大小：</span><span id="imageSize" class="ml-1">-</span></div>
+                        </div>
+                        <div id="allParamsContainer" class="hidden mt-3 border-t border-gray-200 dark:border-gray-700 pt-3">
+                            <h3 class="text-sm font-medium mb-2 flex items-center"><i class="fa-solid fa-list-check mr-1"></i> 所有参数</h3>
+                            <div id="allParams" class="flex flex-wrap"></div>
+                        </div>
+                        <div id="imageMeta" class="hidden mt-3 border-t border-gray-200 dark:border-gray-700 pt-3">
+                            <h3 class="text-sm font-medium mb-2 flex items-center"><i class="fa-solid fa-table mr-1"></i> 每张图片信息</h3>
+                            <table class="w-full text-xs">
+                                <thead><tr class="text-left"><th class="py-1">#</th><th class="py-1">尺寸</th><th class="py-1">大小</th></tr></thead>
+                                <tbody id="imageMetaBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            let availableModels = [];
+            let randomPromptsList = [];
+            let currentImageParams = {};
+            let currentImagesArray = null;
+
+            // 参数建议
+            const modelRecommendations = {
+                'stable-diffusion-xl-base-1.0': { steps: 20, guidance:8, maxSteps: 50 },
+                'flux-1-schnell': { steps: 8, guidance: 5.0, maxSteps: 12 },
+                'dreamshaper-8-lcm': { steps: 10, guidance: 7.0, maxSteps: 20 },
+                'stable-diffusion-xl-lightning': { steps: 4, guidance: 2.0, maxSteps: 10 },
+                'stable-diffusion-v1-5-img2img': { steps: 30, guidance: 8.0, maxSteps: 50 },
+                'stable-diffusion-v1-5-inpainting': { steps: 30, guidance: 8.0, maxSteps: 50 }
+            };
+            
+            async function loadModels() {
+                try {
+                    const response = await fetch('/api/models');
+                    if (!response.ok) throw new Error('加载模型列表失败');
+                    availableModels = await response.json();
+                    const modelSelect = document.getElementById('model');
+                    modelSelect.innerHTML = '';
+                    availableModels.forEach(model => {
+                        const option = document.createElement('option');
+                        option.value = model.id;
+                        option.textContent = `${model.name} - ${model.description}`;
+                        modelSelect.appendChild(option);
+                    });
+                    if (availableModels.length > 0) {
+                        modelSelect.value = availableModels[0].id;
+                        modelSelect.dispatchEvent(new Event('change'));
+                    }
+                } catch (error) {
+                    console.error('加载模型列表错误:', error);
+                    showStatus('加载模型列表失败', 'error');
+                }
+            }
+            
+            async function loadRandomPrompts() {
+                try {
+                    const response = await fetch('/api/prompts');
+                    if (!response.ok) throw new Error('加载提示词失败');
+                    randomPromptsList = await response.json();
+                } catch (error) {
+                    console.error('加载提示词错误:', error);
+                    randomPromptsList = ['未能加载提示词列表'];
+                }
+            }
+            
+            loadModels();
+            loadRandomPrompts();
+
+            (async () => {
+                try {
+                    const res = await fetch('/api/config');
+                    if (res.ok) {
+                        const cfg = await res.json();
+                        if (cfg.require_password) showLogin();
+                    }
+                } catch (_) {}
+            })();
+            
+            const themeToggle = document.getElementById('themeToggle');
+            const html = document.documentElement;
+            const moonIcon = `<i class="fa-solid fa-moon"></i>`;
+            const sunIcon = `<i class="fa-solid fa-sun"></i>`;
+            
+            if (localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+                html.classList.add('dark');
+                themeToggle.innerHTML = sunIcon;
+            } else {
+                themeToggle.innerHTML = moonIcon;
+            }
+            
+            themeToggle.addEventListener('click', function() {
+                html.classList.toggle('dark');
+                if (html.classList.contains('dark')) {
+                    localStorage.theme = 'dark';
+                    themeToggle.innerHTML = sunIcon;
+                } else {
+                    localStorage.theme = 'light';
+                    themeToggle.innerHTML = moonIcon;
+                }
+            });
+            
+            const toggleAdvanced = document.getElementById('toggleAdvanced');
+            const advancedOptions = document.getElementById('advancedOptions');
+            const advancedIcon = document.getElementById('advancedIcon');
+            toggleAdvanced.addEventListener('click', function() {
+                advancedOptions.classList.toggle('hidden');
+                advancedIcon.classList.toggle('fa-chevron-down');
+                advancedIcon.classList.toggle('fa-chevron-up');
+            });
+            
+            const modelSelectEl = document.getElementById('model');
+            const img2imgInputs = document.getElementById('img2imgInputs');
+            modelSelectEl.addEventListener('change', function() {
+                const selectedModelId = this.value;
+                const selected = availableModels.find(m => m.id === selectedModelId);
+                img2imgInputs.classList.toggle('hidden', !(selected && selected.requiresImage));
+
+                const recommendations = modelRecommendations[selectedModelId];
+                if (recommendations) {
+                    const numStepsSlider = document.getElementById('num_steps');
+                    const guidanceSlider = document.getElementById('guidance');
+                    numStepsSlider.max = recommendations.maxSteps;
+                    numStepsSlider.value = recommendations.steps;
+                    guidanceSlider.value = recommendations.guidance;
+                    numStepsSlider.dispatchEvent(new Event('input'));
+                    guidanceSlider.dispatchEvent(new Event('input'));
+                }
+
+                // 修复点：SDXL 时将分辨率上限改为 1024
+                const isSDXL = selectedModelId === 'stable-diffusion-xl-base-1.0';
+                const widthSlider = document.getElementById('width');
+                const heightSlider = document.getElementById('height');
+                const widthValue = document.getElementById('widthValue');
+                const heightValue = document.getElementById('heightValue');
+                const numOutputsSel = document.getElementById('num_outputs');
+
+                const maxDim = isSDXL ? 1024 : 2048;
+                widthSlider.max = String(maxDim);
+                heightSlider.max = String(maxDim);
+                if (parseInt(widthSlider.value) > maxDim) widthSlider.value = String(maxDim);
+                if (parseInt(heightSlider.value) > maxDim) heightSlider.value = String(maxDim);
+                widthSlider.dispatchEvent(new Event('input'));
+                heightSlider.dispatchEvent(new Event('input'));
+                widthValue.textContent = `${widthSlider.value}px`;
+                heightValue.textContent = `${heightSlider.value}px`;
+
+                Array.from(numOutputsSel.options).forEach(opt => {
+                    // 修复点：移除SDXL对4和8的限制，允许所有模型生成最多8张图像
+                    if (['4','8'].includes(opt.value)) opt.disabled = false;
+                });
+                // 修复点：移除SDXL最多2张图像的限制
+                // if (isSDXL && parseInt(numOutputsSel.value) > 2) numOutputsSel.value = '2';
+            });
+
+            ['width', 'height', 'num_steps', 'guidance', 'strength'].forEach(id => {
+                const slider = document.getElementById(id);
+                const valueDisplay = document.getElementById(`${id}Value`);
+                slider.addEventListener('input', () => {
+                    const unit = (id === 'width' || id === 'height') ? 'px' : '';
+                    const fixed = (id === 'guidance' || id === 'strength') ? 1 : 0;
+                    valueDisplay.textContent = `${parseFloat(slider.value).toFixed(fixed)}${unit}`;
+                });
+            });
+
+            ['image_file', 'mask_file'].forEach(id => {
+                const fileInput = document.getElementById(id);
+                const fileNameSpan = document.getElementById(`${id}_name`);
+                fileInput.addEventListener('change', () => {
+                    fileNameSpan.textContent = fileInput.files.length > 0 ? fileInput.files[0].name : '未选择文件';
+                });
+            });
+            
+            document.getElementById('randomSeed').addEventListener('click', () => {
+                document.getElementById('seed').value = Math.floor(Math.random() * 4294967295);
+            });
+            
+            document.getElementById('randomButton').addEventListener('click', () => {
+                if (randomPromptsList.length > 0) {
+                    document.getElementById('prompt').value = randomPromptsList[Math.floor(Math.random() * randomPromptsList.length)];
+                }
+            });
+            
+            document.getElementById('copyParamsButton').addEventListener('click', function() {
+                if (!currentImageParams) return;
+                let paramsText = '--- AI绘图创作生成参数 ---\n';
+                for (const [key, value] of Object.entries(currentImageParams)) {
+                    paramsText += `${formatParamName(key)}: ${value}\n`;
+                }
+                navigator.clipboard.writeText(paramsText).then(() => showStatus('参数已复制', 'success'), () => showStatus('复制失败', 'error'));
+            });
+            
+            function formatParamName(name) {
+                const nameMap = {'prompt':'正向提示词','negative_prompt':'反向提示词','model':'模型','width':'宽度','height':'高度','num_steps':'步数','guidance':'引导系数','seed':'种子','strength':'变换强度'};
+                return nameMap[name] || name;
+            }
+            
+            document.getElementById('downloadButton').addEventListener('click', async function() {
+                const src = currentImagesArray ? currentImagesArray[0] : document.getElementById('aiImage').src;
+                if (!src) return;
+                downloadImage(src, 0);
+            });
+
+            document.getElementById('downloadZipButton').addEventListener('click', async function() {
+                if (!currentImagesArray || currentImagesArray.length === 0) return;
+                try {
+                    const zip = new JSZip();
+                    const model = getModelNameById(currentImageParams.model) || 'ai-image';
+                    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                    currentImagesArray.forEach((dataURL, i) => {
+                        zip.file(`${model}-${timestamp}-${i+1}.png`, dataURL.split(',')[1], { base64: true });
+                    });
+                    const blob = await zip.generateAsync({ type: 'blob' });
+                    const url = window.URL.createObjectURL(blob);
+                    const link = document.createElement('a');
+                    link.href = url;
+                    link.download = `${model}-${timestamp}.zip`;
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    window.URL.revokeObjectURL(url);
+                } catch (e) { showStatus('打包ZIP失败', 'error'); }
+            });
+            
+            let progressTimer = null;
+            let pendingController = null;
+
+            document.getElementById('submitButton').addEventListener('click', async function() {
+                const loadingOverlay = document.getElementById('loadingOverlay');
+                const initialPrompt = document.getElementById('initialPrompt');
+                const aiImage = document.getElementById('aiImage');
+                const loadingStatusText = document.getElementById('loadingStatusText');
+                
+                initialPrompt.classList.add('hidden');
+                aiImage.classList.add('hidden');
+                loadingOverlay.classList.remove('hidden');
+                
+                ['imageStatus', 'copyParamsButton', 'downloadButton', 'downloadZipButton'].forEach(id => document.getElementById(id).classList.add('hidden'));
+                if (progressTimer) clearInterval(progressTimer);
+                if (pendingController) try { pendingController.abort(); } catch(_){}
+
+                const selectedModelMeta = availableModels.find(m => m.id === document.getElementById('model').value);
+                const params = {
+                    prompt: document.getElementById('prompt').value,
+                    negative_prompt: document.getElementById('negative_prompt').value,
+                    model: selectedModelMeta.id,
+                    width: parseInt(document.getElementById('width').value),
+                    height: parseInt(document.getElementById('height').value),
+                    num_steps: parseInt(document.getElementById('num_steps').value),
+                    guidance: parseFloat(document.getElementById('guidance').value),
+                    seed: parseInt(document.getElementById('seed').value) || Math.floor(Math.random() * 4294967295),
+                    num_outputs: parseInt(document.getElementById('num_outputs').value) || 1
+                };
+
+                // 对于图生图和局部重绘模型，添加strength参数
+                if (selectedModelMeta && selectedModelMeta.requiresImage) {
+                    params.strength = parseFloat(document.getElementById('strength').value);
+                }
+
+                try {
+                    if (selectedModelMeta && selectedModelMeta.requiresImage) {
+                        const imageFile = document.getElementById('image_file').files[0];
+                        if (!imageFile) throw new Error('该模型需要上传输入图像');
+                        loadingStatusText.textContent = '上传输入图中...';
+                        params.image_key = await uploadImage(imageFile);
+                    }
+                    if (selectedModelMeta && selectedModelMeta.requiresMask) {
+                        const maskFile = document.getElementById('mask_file').files[0];
+                        if (!maskFile) throw new Error('该模型需要上传遮罩图像');
+                        loadingStatusText.textContent = '上传遮罩图中...';
+                        params.mask_key = await uploadImage(maskFile);
+                    }
+                } catch (error) {
+                    showStatus(error.message, 'error');
+                    loadingOverlay.classList.add('hidden');
+                    initialPrompt.classList.remove('hidden');
+                    return;
+                }
+                
+                currentImageParams = {...params};
+                
+                try {
+                    const startTime = performance.now();
+                    loadingStatusText.textContent = '生成中，请稍候...';
+                    startProgressBar(params.num_steps);
+                    
+                    pendingController = new AbortController();
+                    // 修复点：SDXL 提高超时到 150s，其它模型 90s
+                    const timeoutMs = (selectedModelMeta && selectedModelMeta.id === 'stable-diffusion-xl-base-1.0') ? 150000 : 90000;
+                    const timeoutId = setTimeout(() => pendingController.abort('timeout'), timeoutMs);
+
+                    const response = await fetch('/', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json', 'Accept': 'image/*, application/json'},
+                        body: JSON.stringify(params),
+                        signal: pendingController.signal
+                    });
+                    clearTimeout(timeoutId);
+                    
+                    if (!response.ok) {
+                        // 修复点：把 details 一并展示出来
+                        const errorData = await response.json().catch(() => ({error: '未知错误'}));
+                        const msg = (errorData.error || `请求失败: ${response.status}`) + (errorData.details ? `：${errorData.details}` : '');
+                        throw new Error(msg);
+                    }
+                    
+                    const respType = response.headers.get('content-type') || '';
+                    const serverSeconds = parseFloat(response.headers.get('X-Server-Seconds'));
+                    let imagesArray = null;
+
+                    if (respType.includes('application/json')) {
+                        const json = await response.json();
+                        imagesArray = json.images;
+                    } else {
+                        const imageBlob = await response.blob();
+                        imagesArray = [await blobToBase64(imageBlob)];
+                    }
+                    
+                    const generationTime = ((performance.now() - startTime) / 1000).toFixed(2);
+                    
+                    const gallery = document.getElementById('imageGallery');
+                    gallery.innerHTML = '';
+                    currentImagesArray = imagesArray;
+
+                    if (imagesArray.length > 1) {
+                        aiImage.classList.add('hidden');
+                        gallery.classList.remove('hidden');
+                        imagesArray.forEach((src, idx) => {
+                            const wrap = document.createElement('div');
+                            wrap.className = 'relative group';
+                            const img = document.createElement('img');
+                            img.src = src;
+                            img.className = 'w-full h-auto rounded cursor-zoom-in';
+                            img.onclick = () => openImageModal(src);
+
+                            const bar = document.createElement('div');
+                            bar.className = 'absolute bottom-1 left-1 right-1 hidden group-hover:flex bg-black bg-opacity-50 text-white text-xs rounded px-1 py-0.5 gap-1 justify-center';
+                            bar.innerHTML = `
+                                <button title="放大" onclick="event.stopPropagation(); openImageModal('${src}')"><i class="fa-solid fa-magnifying-glass-plus"></i></button>
+                                <button title="下载" onclick="event.stopPropagation(); downloadImage('${src}', ${idx})"><i class="fa-solid fa-download"></i></button>`;
+                            wrap.append(img, bar);
+                            gallery.appendChild(wrap);
+                        });
+                    } else {
+                        gallery.classList.add('hidden');
+                        aiImage.src = imagesArray[0];
+                        aiImage.classList.remove('hidden');
+                    }
+                    finalizeUI(response, params, generationTime, serverSeconds, imagesArray);
+                } catch (error) {
+                    showStatus(error.name === 'AbortError' ? '生成超时' : error.message, 'error');
+                    const initialPrompt = document.getElementById('initialPrompt');
+                    initialPrompt.classList.remove('hidden');
+                } finally {
+                    const loadingOverlay = document.getElementById('loadingOverlay');
+                    loadingOverlay.classList.add('hidden');
+                    if (progressTimer) clearInterval(progressTimer);
+                    pendingController = null;
+                }
+            });
+
+            async function uploadImage(file) {
+                const response = await fetch('/api/upload', {
+                    method: 'POST',
+                    headers: { 'Content-Type': file.type },
+                    body: file
+                });
+                if (!response.ok) {
+                    const error = await response.json().catch(() => ({error: '上传失败'}));
+                    throw new Error(error.error || '上传图片时出错');
+                }
+                const result = await response.json();
+                return result.key;
+            }
+            
+            function blobToBase64(blob) {
+                return new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onloadend = () => resolve(reader.result);
+                    reader.onerror = reject;
+                    reader.readAsDataURL(blob);
+                });
+            }
+
+            function formatBytes(bytes) {
+                if (!bytes && bytes !== 0) return '-';
+                if (bytes === 0) return '0 B';
+                const i = Math.floor(Math.log(bytes) / Math.log(1024));
+                return `${(bytes / Math.pow(1024, i)).toFixed(2)} ${['B', 'KB', 'MB', 'GB'][i]}`;
+            }
+
+            function dataURLBytes(dataURL) {
+                try { return Math.floor((dataURL.split(',')[1] || '').length * 3 / 4); } catch (_) { return 0; }
+            }
+
+            window.openImageModal = function(src) {
+                document.getElementById('imgModal')?.remove();
+                const modal = document.createElement('div');
+                modal.id = 'imgModal';
+                modal.className = "fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-[1000]";
+                modal.innerHTML = `<div class="max-w-5xl max-h-[90vh] p-2"><img src="${src}" class="rounded shadow-lg max-h-[85vh] mx-auto" /><div class="text-center mt-2"><button id="closeImgModal" class="btn btn-secondary">关闭</button></div></div>`;
+                document.body.appendChild(modal);
+                document.getElementById('closeImgModal').onclick = () => modal.remove();
+                modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+            }
+
+            window.downloadImage = async function(src, index) {
+                try {
+                    const blob = await (await fetch(src)).blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const link = document.createElement('a');
+                    link.href = url;
+                    const model = getModelNameById(currentImageParams.model) || 'ai-image';
+                    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                    link.download = `${model}-${timestamp}-${index+1}.png`;
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    window.URL.revokeObjectURL(url);
+                } catch (_) { showStatus('下载失败', 'error'); }
+            }
+            
+            function getModelNameById(id) {
+                const model = availableModels.find(m => m.id === id);
+                return model ? model.name : id;
+            }
+            
+            function updateParamsDisplay(params) {
+                const allParamsElement = document.getElementById('allParams');
+                allParamsElement.innerHTML = '';
+                Object.entries(params).forEach(([key, value]) => {
+                    if (key.endsWith('_key')) return;
+                    const badge = document.createElement('div');
+                    badge.className = 'param-badge';
+                    badge.innerHTML = `<span class="font-medium">${formatParamName(key)}:</span> ${key === 'model' ? getModelNameById(value) : value}`;
+                    allParamsElement.appendChild(badge);
+                });
+                document.getElementById('allParamsContainer').classList.remove('hidden');
+            }
+
+            function finalizeUI(response, params, generationTime, serverSeconds, imagesArray) {
+                document.getElementById('generationTime').textContent = `${generationTime}秒`;
+                document.getElementById('usedModel').textContent = getModelNameById(params.model);
+                const steps = Number(params.num_steps) || 0;
+                const seconds = serverSeconds > 0 ? serverSeconds : parseFloat(generationTime);
+                document.getElementById('computeInfo').textContent = (steps > 0 && seconds > 0) ? (steps / seconds).toFixed(2) : '-';
+                
+                const metaBody = document.getElementById('imageMetaBody');
+                metaBody.innerHTML = '';
+                imagesArray.forEach((src, i) => {
+                    const probe = new Image();
+                    probe.onload = () => {
+                        const tr = metaBody.insertRow();
+                        tr.innerHTML = `<td class="py-1 pr-3">${i+1}</td><td class="py-1 pr-3">${probe.width}×${probe.height}</td><td class="py-1">${formatBytes(dataURLBytes(src))}</td>`;
+                    };
+                    probe.src = src;
+                });
+                document.getElementById('imageMeta').classList.remove('hidden');
+                
+                document.getElementById('imageSize').textContent = formatBytes(dataURLBytes(imagesArray[0]));
+                
+                updateParamsDisplay(params);
+                showStatus(imagesArray.length > 1 ? `生成成功（${imagesArray.length} 张）` : '生成成功', 'success');
+                document.getElementById('copyParamsButton').classList.remove('hidden');
+                document.getElementById('downloadButton').classList.remove('hidden');
+                document.getElementById('downloadZipButton').classList.toggle('hidden', imagesArray.length <= 1);
+
+                if (progressTimer) clearInterval(progressTimer);
+                const progressBar = document.getElementById('progressBar');
+                progressBar.style.width = '100%';
+                document.getElementById('progressText').textContent = '100%';
+                setTimeout(() => document.getElementById('progressBarContainer').classList.add('hidden'), 800);
+            }
+
+            function startProgressBar(steps) {
+                const progressBarContainer = document.getElementById('progressBarContainer');
+                const progressBar = document.getElementById('progressBar');
+                const progressText = document.getElementById('progressText');
+                progressBarContainer.classList.remove('hidden');
+                let progress = 0;
+                progressBar.style.width = '0%';
+                progressText.textContent = '0%';
+                const baseMs = Math.max(4000, Math.min(20000, steps * 600));
+                const startTs = Date.now();
+                progressTimer = setInterval(() => {
+                    const ratio = Math.min(0.95, (Date.now() - startTs) / baseMs);
+                    progress = Math.floor(ratio * 100);
+                    progressBar.style.width = `${progress}%`;
+                    progressText.textContent = `${progress}%`;
+                }, 150);
+            }
+            
+            function showStatus(message, type = 'info') {
+                const statusElement = document.getElementById('imageStatus');
+                statusElement.className = 'absolute bottom-4 left-4 z-20 py-1 px-3 rounded-full text-sm font-medium shadow-lg transition-all duration-300';
+                const colors = {
+                    success: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-100',
+                    error: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-100',
+                    warning: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-100',
+                    info: 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-100'
+                };
+                statusElement.classList.add(...colors[type].split(' '));
+                statusElement.textContent = message;
+                statusElement.classList.remove('hidden');
+                setTimeout(() => statusElement.classList.add('hidden'), 5000);
+            }
+        });
+
+        function showLogin() {
+            if (document.getElementById('loginOverlay')) return;
+            const overlay = document.createElement('div');
+            overlay.id = 'loginOverlay';
+            overlay.className = "fixed inset-0 backdrop-blur-sm bg-black bg-opacity-40 z-[1000] flex items-center justify-center";
+            overlay.innerHTML = `
+                <div class="card p-6 w-96 bg-white dark:bg-gray-800">
+                    <h3 class="text-lg font-semibold mb-4">请输入访问密码</h3>
+                    <input type="password" id="loginPassword" class="w-full" placeholder="访问密码" />
+                    <button id="loginButton" class="btn btn-primary w-full mt-4">登录</button>
+                    <p id="loginError" class="text-red-500 text-sm mt-2 hidden">密码错误</p>
+                </div>`;
+            document.body.appendChild(overlay);
+            const passwordInput = document.getElementById('loginPassword');
+            const submitButton = document.getElementById('loginButton');
+            const errorMsg = document.getElementById('loginError');
+            passwordInput.focus();
+            const submitLogin = async () => {
+                try {
+                    const resp = await fetch('/api/auth', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ password: passwordInput.value })
+                    });
+                    if (!resp.ok) {
+                        errorMsg.classList.remove('hidden');
+                        return;
+                    }
+                    overlay.remove();
+                } catch (_) { errorMsg.classList.remove('hidden'); }
+            };
+            submitButton.addEventListener('click', submitLogin);
+            passwordInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitLogin(); });
+        }
+    </script>
+<script defer src="https://static.cloudflareinsights.com/beacon.min.js/vcd15cbe7772f49c399c6a5babf22c1241717689176015" integrity="sha512-ZpsOmlRQV6y907TI0dKBHq9Md29nnaEIPlkf84rnaERnq6zvWvPUqr2ft8M1aS28oN72PdrCzSjY4U6VaAw1EQ==" data-cf-beacon='{"version":"2024.11.0","token":"0b6ba2410bcd469da5b750e02c8e512a","r":1,"server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
+</body>
+</html>
